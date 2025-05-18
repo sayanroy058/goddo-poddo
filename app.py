@@ -4,11 +4,13 @@ from config import Config
 from models import db, User, Story, Poem
 from werkzeug.exceptions import BadRequest
 
-app = Flask(__name__)
+app = Flask(__name__)  # Corrected from **name**
 app.config.from_object(Config)
-db.init_app(app)
-CORS(app)
 app.secret_key = 'your-secret-key'  # Needed for session management
+
+CORS(app, supports_credentials=True)  # Enable CORS and support cookies (session)
+
+db.init_app(app)
 
 # ========== Routes ==========
 
@@ -82,6 +84,7 @@ def get_story(id):
     story = Story.query.get(id)
     if not story:
         return jsonify({'message': 'Story not found'}), 404
+
     return jsonify({
         'id': story.STORY_ID,
         'name': story.NAME,
@@ -138,6 +141,7 @@ def get_poem(id):
     poem = Poem.query.get(id)
     if not poem:
         return jsonify({'message': 'Poem not found'}), 404
+
     return jsonify({
         'id': poem.STORY_ID,
         'name': poem.NAME,
@@ -170,6 +174,8 @@ def forgot_password():
     data = request.form
     return jsonify({'message': f"Reset link sent to {data['email']} (mock response)"})
 
+
+# ========== App Start ==========
 
 if __name__ == '__main__':
     with app.app_context():
