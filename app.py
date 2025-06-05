@@ -4,13 +4,19 @@ from config import Config
 from models import db, User, Story, Poem
 from werkzeug.exceptions import BadRequest
 
-app = Flask(__name__)  # Corrected from **name**
+app = Flask(__name__)
 app.config.from_object(Config)
-app.secret_key = 'your-secret-key'  # Needed for session management
-
-CORS(app, supports_credentials=True)  # Enable CORS and support cookies (session)
-
 db.init_app(app)
+# Update CORS to support credentials and allow your frontend origin
+CORS(app, supports_credentials=True)
+# CORS(app, supports_credentials=True, origins=["http://192.168.12.110:50582", "http://localhost:50582", ])
+app.secret_key = '1e0f8ec42d90b9bce555c440b39a7f2bd8a7c7102844d42b416c2aa9aa44963b'  # Needed for session management
+
+def get_current_user():
+    user_id = session.get('user_id')
+    if not user_id:
+        return None
+    return user_id
 
 # ========== Routes ==========
 
@@ -44,7 +50,7 @@ def login():
     user = User.query.filter_by(email=data['email'], role=data['roles']).first()
     if user and user.check_password(data['password']):
         session['user_id'] = user.id
-        return jsonify({'message': 'Login successful'}), 200
+        return jsonify({'message': 'Login successful','user_id': user.id}), 200
 
     return jsonify({'message': 'Invalid credentials'}), 401
 
@@ -84,7 +90,6 @@ def get_story(id):
     story = Story.query.get(id)
     if not story:
         return jsonify({'message': 'Story not found'}), 404
-
     return jsonify({
         'id': story.STORY_ID,
         'name': story.NAME,
@@ -141,7 +146,6 @@ def get_poem(id):
     poem = Poem.query.get(id)
     if not poem:
         return jsonify({'message': 'Poem not found'}), 404
-
     return jsonify({
         'id': poem.STORY_ID,
         'name': poem.NAME,
@@ -174,8 +178,209 @@ def forgot_password():
     data = request.form
     return jsonify({'message': f"Reset link sent to {data['email']} (mock response)"})
 
+# Activate or Deactivate a user
+@app.route('/api/user/<int:user_id>/status', methods=['PATCH'])
+def toggle_user_status(user_id):
+    data = request.get_json()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
 
-# ========== App Start ==========
+    user.is_active = data.get('is_active', user.is_active)
+    db.session.commit()
+    return jsonify({'message': f"User {'activated' if user.is_active else 'deactivated'} successfully"})
+
+
+# Approve or Reject a user
+@app.route('/api/user/<int:user_id>/approval', methods=['PATCH'])
+def set_user_approval(user_id):
+    data = request.get_json()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    user.is_approved = data.get('is_approved', user.is_approved)
+    db.session.commit()
+    return jsonify({'message': f"User {'approved' if user.is_approved else 'rejected'} successfully"})
+
+
+# View all users (optionally filter by role or approval status)
+@app.route('/api/users', methods=['GET'])
+def view_users():
+    role = request.args.get('role')
+    approved = request.args.get('approved')
+
+    query = User.query
+    if role:
+        query = query.filter_by(role=role)
+    if approved is not None:
+        query = query.filter_by(is_approved=(approved.lower() == 'true'))
+
+    users = query.all()
+    return jsonify([{
+        'id': user.id,
+        'full_name': user.full_name,
+        'email': user.email,
+        'mobile': user.mobile,
+        'role': user.role,
+        'is_active': user.is_active,
+        'is_approved': user.is_approved
+    } for user in users])
+
+
+# Edit user information
+@app.route('/api/user/<int:user_id>', methods=['PUT'])
+def edit_user(user_id):
+    data = request.get_json()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    user.full_name = data.get('full_name', user.full_name)
+    user.email = data.get('email', user.email)
+    user.mobile = data.get('mobile', user.mobile)
+    user.role = data.get('role', user.role)
+    if 'password' in data:
+        user.set_password(data['password'])
+
+    db.session.commit()
+    return jsonify({'message': 'User updated successfully'})
+
+# View all draft stories by the logged-in user
+@app.route('/api/story/drafts', methods=['GET'])
+def view_draft_stories():
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+    drafts = Story.query.filter_by(WRITTEN_BY=user_id, STATUS='draft').all()
+    return jsonify([{
+        'id': story.STORY_ID,
+        'name': story.NAME,
+        'language': story.LANGUAGE,
+        'font': story.FONT,
+        'pdf_url': story.PDF_URL,
+        'story': story.STORY,
+        'price': float(story.PRICE)
+    } for story in drafts])
+
+# Edit a draft story
+@app.route('/api/story/<int:id>', methods=['PUT'])
+def edit_draft_story(id):
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+
+    story = Story.query.get(id)
+    if not story or story.WRITTEN_BY != user_id or story.STATUS != 'draft':
+        return jsonify({'message': 'Draft story not found or access denied'}), 404
+
+    data = request.json
+    story.NAME = data.get('name', story.NAME)
+    story.LANGUAGE = data.get('language', story.LANGUAGE)
+    story.FONT = data.get('font', story.FONT)
+    story.PDF_URL = data.get('pdf_url', story.PDF_URL)
+    story.STORY = data.get('story', story.STORY)
+    story.PRICE = data.get('price', story.PRICE)
+    db.session.commit()
+    return jsonify({'message': 'Draft story updated successfully'})
+
+# Delete a draft story
+@app.route('/api/story/<int:id>', methods=['DELETE'])
+def delete_draft_story(id):
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+
+    story = Story.query.get(id)
+    if not story or story.WRITTEN_BY != user_id or story.STATUS != 'draft':
+        return jsonify({'message': 'Draft story not found or access denied'}), 404
+
+    db.session.delete(story)
+    db.session.commit()
+    return jsonify({'message': 'Draft story deleted successfully'})
+
+# Approve (publish) a draft story
+@app.route('/api/story/<int:id>/approve', methods=['POST'])
+def approve_story(id):
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+
+    story = Story.query.get(id)
+    if not story or story.WRITTEN_BY != user_id or story.STATUS != 'draft':
+        return jsonify({'message': 'Draft story not found or access denied'}), 404
+
+    story.STATUS = 'published'
+    db.session.commit()
+    return jsonify({'message': 'Story published successfully'})
+# View all draft poems by the logged-in user
+@app.route('/api/poem/drafts', methods=['GET'])
+def view_draft_poems():
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+    drafts = Poem.query.filter_by(WRITTEN_BY=user_id, STATUS='draft').all()
+    return jsonify([{
+        'id': poem.STORY_ID,
+        'name': poem.NAME,
+        'language': poem.LANGUAGE,
+        'font': poem.FONT,
+        'pdf_url': poem.PDF_URL,
+        'story': poem.STORY,
+        'price': float(poem.PRICE)
+    } for poem in drafts])
+
+# Edit a draft poem
+@app.route('/api/poem/<int:id>', methods=['PUT'])
+def edit_draft_poem(id):
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+
+    poem = Poem.query.get(id)
+    if not poem or poem.WRITTEN_BY != user_id or poem.STATUS != 'draft':
+        return jsonify({'message': 'Draft poem not found or access denied'}), 404
+
+    data = request.json
+    poem.NAME = data.get('name', poem.NAME)
+    poem.LANGUAGE = data.get('language', poem.LANGUAGE)
+    poem.FONT = data.get('font', poem.FONT)
+    poem.PDF_URL = data.get('pdf_url', poem.PDF_URL)
+    poem.STORY = data.get('story', poem.STORY)
+    poem.PRICE = data.get('price', poem.PRICE)
+    db.session.commit()
+    return jsonify({'message': 'Draft poem updated successfully'})
+
+# Delete a draft poem
+@app.route('/api/poem/<int:id>', methods=['DELETE'])
+def delete_draft_poem(id):
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+
+    poem = Poem.query.get(id)
+    if not poem or poem.WRITTEN_BY != user_id or poem.STATUS != 'draft':
+        return jsonify({'message': 'Draft poem not found or access denied'}), 404
+
+    db.session.delete(poem)
+    db.session.commit()
+    return jsonify({'message': 'Draft poem deleted successfully'})
+
+# Approve (publish) a draft poem
+@app.route('/api/poem/<int:id>/approve', methods=['POST'])
+def approve_poem(id):
+    user_id = get_current_user()
+    if not user_id:
+        return jsonify({'message': 'Authentication required'}), 401
+
+    poem = Poem.query.get(id)
+    if not poem or poem.WRITTEN_BY != user_id or poem.STATUS != 'draft':
+        return jsonify({'message': 'Draft poem not found or access denied'}), 404
+
+    poem.STATUS = 'published'
+    db.session.commit()
+    return jsonify({'message': 'Poem published successfully'})
+
 
 if __name__ == '__main__':
     with app.app_context():
