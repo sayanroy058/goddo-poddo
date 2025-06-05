@@ -12,6 +12,9 @@ class User(db.Model):
     mobile = db.Column(db.String(15))
     password = db.Column(db.String(255))
     role = db.Column(db.String(20))
+    is_active = db.Column(db.Boolean, default=True)  # For activate/deactivate
+    is_approved = db.Column(db.Boolean, default=False)  # For approve/reject
+
 
     def set_password(self, password):
         self.password = generate_password_hash(password)
