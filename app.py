@@ -8,7 +8,7 @@ app = Flask(__name__)
 app.config.from_object(Config)
 db.init_app(app)
 # CORS(app, supports_credentials=True)
-# CORS(app, supports_credentials=True, origins=["https://goddopoddo.com"])
+CORS(app, supports_credentials=True, origins=["https://goddopoddo.com"])
 app.secret_key = '1e0f8ec42d90b9bce555c440b39a7f2bd8a7c7102844d42b416c2aa9aa44963b'  # Needed for session management
 
 def get_current_user():
