@@ -5,6 +5,7 @@ from config import Config
 from models import AudioStory, db, User, Story, Poem, Admin, HelpSupport
 from werkzeug.exceptions import BadRequest
 from werkzeug.utils import secure_filename
+from sqlalchemy import func, desc
 import os
 
 
@@ -511,6 +512,54 @@ def create_story():
     db.session.commit()
 
     return jsonify({'message': 'Story created successfully'})
+
+
+
+# Get all published stories (publicly accessible)
+@app.route('/api/public/stories', methods=['GET'])
+def get_all_published_stories():
+    # Fetch only published stories, ordered by latest update
+    stories = Story.query.filter_by(STATUS='published').order_by(Story.UPDATED_ON.desc()).all()
+
+    response = []
+    for story in stories:
+        response.append({
+            'id': story.STORY_ID,
+            'authorId': story.WRITTEN_BY,
+            'name': story.NAME,
+            'language': story.LANGUAGE,
+            'font': story.FONT,
+            'pdf_url': story.PDF_URL,
+            'story': story.STORY,
+            'status': story.STATUS,
+            'price': float(story.PRICE) if story.PRICE else 0.00,
+            'tags': story.TAGS,
+            'created_on': story.CREATED_ON.strftime('%Y-%m-%d %H:%M:%S') if story.CREATED_ON else None,
+            'updated_on': story.UPDATED_ON.strftime('%Y-%m-%d %H:%M:%S') if story.UPDATED_ON else None
+        })
+
+    return jsonify(response)
+
+
+# Get all published poems (publicly accessible)
+@app.route('/api/public/poems', methods=['GET'])
+def get_all_published_poems():
+    # Fetch only published poems, ordered by latest update
+    poems = Poem.query.filter_by(STATUS='published').order_by(Poem.UPDATED_ON.desc()).all()
+
+    response = []
+    for poem in poems:
+        response.append({
+            'id': poem.STORY_ID,
+            'authorId': poem.WRITTEN_BY,
+            'name': poem.NAME,
+            'tags': poem.TAGS,
+            'language': poem.LANGUAGE,
+            'font': poem.FONT,
+            'status': poem.STATUS,
+            'updated_on': poem.UPDATED_ON.strftime('%Y-%m-%d %H:%M:%S') if poem.UPDATED_ON else None
+        })
+    return jsonify(response)
 
 
 # Get a specific story by ID
@@ -1427,12 +1476,155 @@ def get_admin_all_audio():
             'language': audio.LANGUAGE,
             'linked_name': linked_name,
             'status': audio.STATUS,
-            'updated_on': updated_on_display,
+            'updated_on': updated_on_display
+            # 'audio_url': audio.AUDIO_URL
             # 'actions' handled on frontend with 'id'
         })
         serial += 1
 
     return jsonify(audio_list)
+
+@app.route('/api/public/audio', methods=['GET'])
+def get_all_published_audio():
+    audios = AudioStory.query.order_by(AudioStory.UPDATED_ON.desc()).all()
+    audio_list = []
+    serial = 1
+
+    for audio in audios:
+        # Convert tags string to list
+        tags_list = []
+        if audio.TAGS:
+            tags_list = [t.strip() for t in audio.TAGS.split(',') if t.strip()]
+
+        # Resolve linked story or poem name if applicable
+        linked_name = ""
+        if audio.LINK_TYPE == "storyAvailable" and audio.LINKED_STORY_ID:
+            story = Story.query.get(audio.LINKED_STORY_ID)
+            linked_name = story.NAME if story else ""
+        elif audio.LINK_TYPE == "poemAvailable" and audio.LINKED_POEM_ID:
+            poem = Poem.query.get(audio.LINKED_POEM_ID)
+            linked_name = poem.NAME if poem else ""
+
+        updated_on_display = audio.UPDATED_ON.strftime('%d-%m-%Y %H:%M') if audio.UPDATED_ON else ""
+
+        audio_list.append({
+            'serial': serial,
+            'id': audio.AUDIO_ID,
+            'name': audio.NAME,
+            'tags': tags_list,
+            'language': audio.LANGUAGE,
+            'linked_name': linked_name,
+            'status': audio.STATUS,
+            'updated_on': updated_on_display,
+            'audio_url': audio.AUDIO_URL
+            # 'actions' handled on frontend with 'id'
+        })
+        serial += 1
+
+    return jsonify(audio_list)
+
+@app.route("/api/authors", methods=["GET"])
+def get_authors():
+    try:
+        search = request.args.get("search", "").strip()
+        filter_by = request.args.get("filter", "all")
+
+        query = User.query.filter_by(role="Writer", is_active=True, is_approved=True)
+
+        #  Search filter
+        if search:
+            query = query.filter(
+                (User.full_name.ilike(f"%{search}%")) |
+                (User.email.ilike(f"%{search}%"))  # or if you store genre/keywords in TAGS, join Poem/Story
+            )
+
+        #  Filter options
+        if filter_by == "recent":
+            query = query.order_by(User.created_on.desc())
+        elif filter_by == "popular":
+            # Example: popularity = number of stories + poems
+            query = query.outerjoin(Story, Story.WRITTEN_BY == User.id) \
+                         .outerjoin(Poem, Poem.WRITTEN_BY == User.id) \
+                         .group_by(User.id) \
+                         .order_by(desc(func.count(Story.STORY_ID) + func.count(Poem.STORY_ID)))
+        elif filter_by in ["english", "bengali", "hindi"]:
+            # Assuming language stored in stories/poems
+            query = query.join(Story, Story.WRITTEN_BY == User.id) \
+                         .filter(Story.LANGUAGE.ilike(filter_by))
+        elif filter_by == "story":
+            query = query.join(Story, Story.WRITTEN_BY == User.id)
+        elif filter_by == "poem":
+            query = query.join(Poem, Poem.WRITTEN_BY == User.id)
+
+        authors = query.all()
+
+        result = []
+        for author in authors:
+            story_count = Story.query.filter_by(WRITTEN_BY=author.id).count()
+            poem_count = Poem.query.filter_by(WRITTEN_BY=author.id).count()
+            audio_count = AudioStory.query.filter_by(CREATED_BY=author.id).count()
+
+            result.append({
+                "id": author.id,
+                "full_name": author.full_name,
+                "email": author.email,
+                "stories": story_count,
+                "poems": poem_count,
+                "audios": audio_count,
+                "created_on": author.created_on.strftime("%Y-%m-%d"),
+                # "profile_image": author.profile_image if author.profile_image else "default.jpg",  # Add this line
+            })
+
+        return jsonify({"authors": result, "total": len(result)}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/author-stats", methods=["GET"])
+def author_stats():
+    try:
+        total_authors = User.query.filter_by(role="Writer", is_active=True, is_approved=True).count()
+        total_stories = Story.query.count()
+        total_poems = Poem.query.count()
+        total_audio = AudioStory.query.count()
+
+        return jsonify({
+            "total_authors": total_authors,
+            "total_stories": total_stories,
+            "total_poems": total_poems,
+            "total_audio": total_audio
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+#  API to fetch Writer details by id
+
+@app.route('/api/writer/<int:user_id>', methods=['GET'])
+def get_writer(user_id):
+    try:
+        # Fetch user by id & role = Writer
+        writer = User.query.filter_by(id=user_id, role='Writer').first()
+
+        if not writer:
+            return jsonify({"error": "Writer not found"}), 404
+
+        # Return writer details (exclude password)
+        return jsonify({
+            "id": writer.id,
+            "full_name": writer.full_name,
+            "email": writer.email,
+            "mobile": writer.mobile,
+            "role": writer.role,
+            "is_active": writer.is_active,
+            "is_approved": writer.is_approved,
+            "created_on": writer.created_on.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_on": writer.updated_on.strftime("%Y-%m-%d %H:%M:%S")
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     with app.app_context():
